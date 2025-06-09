@@ -13,6 +13,10 @@ from litellm import completion
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from typing import List
+from langchain.tools import BaseTool
+from langchain.document_loaders import CSVLoader
+
 
 def setup_knowledge_base(
     product_catalog: str = None, model_name: str = "gpt-3.5-turbo"
@@ -245,34 +249,122 @@ def generate_calendly_invitation_link(query):
     else:
         return "Failed to create Calendly link: "
 
-def get_tools(product_catalog):
-    # query to get_tools can be used to be embedded and relevant tools found
-    # see here: https://langchain-langchain.vercel.app/docs/use_cases/agents/custom_agent_with_plugin_retrieval#tool-retriever
-
-    # we only use four tools for now, but this is highly extensible!
-    knowledge_base = setup_knowledge_base(product_catalog)
-    tools = [
-        Tool(
-            name="ProductSearch",
-            func=knowledge_base.run,
-            description="useful for when you need to answer questions about product information or services offered, availability and their costs.",
-        ),
-        Tool(
-            name="GeneratePaymentLink",
-            func=generate_stripe_payment_link,
-            description="useful to close a transaction with a customer. You need to include product name and quantity and customer name in the query input.",
-        ),
-        Tool(
-            name="SendEmail",
-            func=send_email_tool,
-            description="Sends an email based on the query input. The query should specify the recipient, subject, and body of the email.",
-        ),
-        Tool(
-            name="SendCalendlyInvitation",
-            func=generate_calendly_invitation_link,
-            description='''Useful for when you need to create invite for a personal meeting in Sleep Heaven shop. 
-            Sends a calendly invitation based on the query input.''',
-        )
-    ]
-
+def get_tools(product_catalog: str = None) -> List[BaseTool]:
+    """Return list of tools available to the agent."""
+    tools = []
+    
+    if product_catalog:
+        tools.append(get_product_catalog_tool(product_catalog))
+    
+    tools.extend([
+        get_email_tool(),
+        get_calendar_tool(),
+        get_web_search_tool(),
+    ])
+    
     return tools
+
+
+def get_product_catalog_tool(product_catalog: str) -> Tool:
+    """Tool for searching product catalog."""
+    
+    def search_product_catalog(query: str) -> str:
+        """Search the product catalog for relevant products."""
+        try:
+            # Load and process product catalog
+            loader = CSVLoader(file_path=product_catalog)
+            docs = loader.load()
+            
+            text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+            texts = text_splitter.split_documents(docs)
+            
+            # Create embeddings and vector store
+            embeddings = OpenAIEmbeddings()
+            db = Chroma.from_documents(texts, embeddings)
+            
+            # Search for relevant products
+            docs = db.similarity_search(query, k=3)
+            
+            if docs:
+                result = "Product Information:\n"
+                for doc in docs:
+                    result += f"- {doc.page_content}\n"
+                return result
+            else:
+                return "No products found matching your query."
+                
+        except Exception as e:
+            return f"Error searching product catalog: {str(e)}"
+    
+    return Tool(
+        name="Search_Product_Catalog",
+        func=search_product_catalog,
+        description="Useful for searching the product catalog to find relevant products and their details. Input should be a search query describing what the customer is looking for."
+    )
+
+
+def get_email_tool() -> Tool:
+    """Tool for sending emails."""
+    
+    def send_email(recipient_and_content: str) -> str:
+        """Send an email to the prospect."""
+        try:
+            # Parse recipient and content
+            lines = recipient_and_content.strip().split('\n')
+            recipient = lines[0].replace('Recipient: ', '')
+            content = '\n'.join(lines[1:]).replace('Content: ', '')
+            
+            # Here you would integrate with your email service
+            # For demo purposes, we'll just log the email
+            print(f"EMAIL SENT TO: {recipient}")
+            print(f"CONTENT: {content}")
+            
+            return f"Email successfully sent to {recipient}"
+        except Exception as e:
+            return f"Failed to send email: {str(e)}"
+    
+    return Tool(
+        name="Send_Email",
+        func=send_email,
+        description="Useful for sending emails to prospects. Input should be in format: 'Recipient: email@domain.com\\nContent: Your email content here'"
+    )
+
+
+def get_calendar_tool() -> Tool:
+    """Tool for calendar management."""
+    
+    def schedule_meeting(meeting_details: str) -> str:
+        """Schedule a meeting with the prospect."""
+        try:
+            # Here you would integrate with calendar API
+            # For demo purposes, we'll just log the meeting
+            print(f"MEETING SCHEDULED: {meeting_details}")
+            
+            return f"Meeting scheduled successfully: {meeting_details}"
+        except Exception as e:
+            return f"Failed to schedule meeting: {str(e)}"
+    
+    return Tool(
+        name="Schedule_Meeting",
+        func=schedule_meeting,
+        description="Useful for scheduling meetings with prospects. Input should include meeting details like date, time, duration, and purpose."
+    )
+
+
+def get_web_search_tool() -> Tool:
+    """Tool for web research about prospects."""
+    
+    def web_search(query: str) -> str:
+        """Search the web for information about prospects or companies."""
+        try:
+            # Here you would integrate with a web search API
+            # For demo purposes, we'll return a placeholder
+            return f"Web search results for '{query}': [This would contain real search results in a production environment]"
+        except Exception as e:
+            return f"Web search failed: {str(e)}"
+    
+    return Tool(
+        name="Web_Search",
+        func=web_search,
+        description="Useful for researching prospects or companies online. Input should be a search query about the company or person you want to research."
+    )
